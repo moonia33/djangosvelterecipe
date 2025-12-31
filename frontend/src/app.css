@@ -1,0 +1,36 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap");
+
+:root {
+    --bg: #050608;
+    --bg-secondary: #0e1018;
+    --surface: rgba(255, 255, 255, 0.05);
+    --surface-strong: rgba(255, 255, 255, 0.12);
+    --accent: #ffb347;
+    --accent-2: #f95d9b;
+    --text: #f5f7fb;
+    --muted: rgba(245, 247, 251, 0.8);
+    --grid: rgba(255, 255, 255, 0.04);
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: "Space Grotesk", "Manrope", system-ui, sans-serif;
+    background: radial-gradient(circle at top, rgba(249, 93, 155, 0.3), transparent 50%),
+        radial-gradient(circle at 20% 20%, rgba(255, 179, 71, 0.25), transparent 45%), var(--bg);
+    min-height: 100vh;
+    color: var(--text);
+    line-height: 1.6;
+}
+
+a {
+    color: inherit;
+}
+
+button {
+    font-family: inherit;
+}
