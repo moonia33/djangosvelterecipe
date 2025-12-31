@@ -32,10 +32,11 @@ Naudingi skriptai: `poetry run python manage.py check`, `poetry run python manag
 
 ## 3. Autentifikacija, sesijos ir saugumas
 
-- Autentifikacijai naudojami standartiniai Django naudotojai. Šiuo metu nėra dedikuoto „login“ API, todėl sesija gaunama per Django auth vaizdus (adminą) arba bus išplėsta ateityje.
+- Naudojame klasikines Django sesijas + CSRF. Visi state-changing endpointai (login, logout, bookmarks, comments, rating, password reset) reikalauja galiojančio `csrftoken` slapuko ir `X-CSRFToken` headerio. Frontendui būtina siųsti `credentials: 'include'` kiekvienam requestui.
+- Pradinė seka: iškviesk `GET /api/auth/session`. Šis endpointas visada grąžina naujausią `csrf_token` (be to, nustato `csrftoken` slapuką) ir parodo, ar naudotojas jau prisijungęs.
+- Prisijungimas vyksta per `POST /api/auth/login`. Payload sudaro `identifier` (vartotojo vardas arba el. paštas) ir `password`. Jei duomenys teisingi, atsakymas – tas pats `SessionSchema` kaip iš `/session`. Atsijungimas – `POST /api/auth/logout`.
 - Endpointai, kurie keičia naudotojo duomenis (`/bookmark`, `/comments`, `/rating`) reikalauja aktyvios Django sesijos; kitaip grąžinamas HTTP 401 su JSON `{"detail": "..."}`.
-- CORS įjungtas ir leidžia nurodytus originus. Frontendui būtina siųsti `credentials: 'include'`, jei norima naudoti sesijos slapuką.
-- CSRF – Ninja endpointai yra CSRF-exempt (šiuo metu nereikia `X-CSRFToken`). Jei kada įjungsime CSRF, frontui reikės paimti `csrftoken` slapuką iš `/api/csrf/` (planas ateičiai).
+- CORS leidžia tik `.env` nurodytas kilmes. Kad slapukas veiktų, `fetch` kvietimuose nurodyk `credentials: 'include'` ir pridėk `X-CSRFToken` su reikšme iš `csrftoken` slapuko.
 - Visas srautas privalo vykti per HTTPS; `.env` `PRIMARY_DOMAIN` ir `API_HOST` naudojami `CSRF_TRUSTED_ORIGINS` ir `ALLOWED_HOSTS` sąrašams.
 - Slaptažodžio atstatymo API visada grąžina `sent: true`, kad išvengtume email enumaracijos.
 
@@ -125,10 +126,17 @@ Visais atvejais neautorizuotas naudotojas gauna 401 ir pranešimą lietuviškai.
 
 ### 5.3 Auth routeris (`/api/auth`)
 
-- `POST /api/auth/password-reset`
-  - Payload: `{ "email": "vartotojas@example.com" }`.
-  - Validacija: jei email neteisingas – 422 (`HttpError`). Jei validus, visada `{ "sent": true }`.
-  - Užkulisiuose `notifications.forms.TemplatedPasswordResetForm` sugeneruoja `uid`/`token` ir įterpia į `PASSWORD_RESET_FRONTEND_PATH` šabloną.
+| Endpointas     | Metodas | Auth         | Aprašymas |
+| -------------- | ------- | ------------ | --------- |
+| `/session`     | GET     | nereikia     | Grąžina `SessionSchema`: `is_authenticated`, `user`, `csrf_token`. Kiekvienas iškvietimas atnaujina `csrftoken` slapuką. |
+| `/login`       | POST    | CSRF + slapukas | Priima `LoginRequestSchema` (`identifier`, `password`). Sėkmės atveju paskiria Django sesiją ir grąžina `SessionSchema`. |
+| `/logout`      | POST    | CSRF + slapukas | Ištrina sesiją ir suteikia naują CSRF tokeną.
+| `/password-reset` | POST | CSRF + slapukas | `{ "email": "vartotojas@example.com" }`. Net jei email neegzistuoja, atsakymas `{ "sent": true }`. Laiškas kuria nuorodą pagal `PASSWORD_RESET_FRONTEND_PATH`.
+
+Frontendo seka:
+1. `GET /api/auth/session` → perskaitai `csrf_token` iš atsakymo (arba `csrftoken` slapuko).
+2. Visi vėlesni POST/DELETE turi headerį `X-CSRFToken: <csrftoken>` ir `credentials: 'include'`.
+3. Jei sesija pasensta, `session` endpointas vėl grąžins `is_authenticated: false`.
 
 ## 6. El. laiškų automatika
 
@@ -157,17 +165,18 @@ Jei kokio nors šablono nėra arba jis išjungtas, loguose matysime įspėjimą,
 ## 9. Tipinė frontendo seka
 
 1. **Konfigūracija** – laikyk API bazę `.env` (pvz., `VITE_API_URL=https://api.apetitas.lt/api`).
-2. **Vieši puslapiai** – kol nėra autentiškumo, laisvai kviesk `GET /sitecontent/*` ir `GET /recipes/*`.
-3. **Naudotojo veiksmai** – kai atsiras login mechanizmas, po prisijungimo išsaugok naršyklės slapukus. Tada gali siųsti `POST /recipes/{id}/bookmark|comments|rating`.
-4. **Slaptažodžio atkūrimas** – `POST /auth/password-reset`, o gavus laišką, frontendas atidarys `PASSWORD_RESET_FRONTEND_PATH` nurodytą maršrutą (Svelte pusėje turėsi `uid` ir `token`).
-5. **Vaizdai** – iš `images` objekto rinkis geriausiai tinkantį variantą (pvz., `<source type="image/avif" srcset=...>`).
+2. **Sesijos inicijavimas** – po puslapio įkėlimo paleisk `await fetch('/api/auth/session', { credentials: 'include' })`. Atsakymas duos `csrf_token` ir naudotojo būseną. Išsaugok tokeną (arba perskaityk `document.cookie` -> `csrftoken`).
+3. **Prisijungimas / atsijungimas** – `POST /api/auth/login|logout` su `credentials: 'include'`, `Content-Type: application/json` ir `X-CSRFToken` iš ankstesnio žingsnio.
+4. **Vieši puslapiai** – bet kuris naudotojas gali kviesti `GET /sitecontent/*` ir `GET /recipes/*` (CSRF nereikia).
+5. **Naudotojo veiksmai** – bookmark, komentarai, reitingai naudoja tą pačią sesiją, todėl POST requestams būtini: aktyvi sesija, `credentials: 'include'` ir `X-CSRFToken`.
+6. **Slaptažodžio atkūrimas** – `POST /auth/password-reset` (su CSRF) inicijuoja laišką; gavus nuorodą, frontendas atidarys `PASSWORD_RESET_FRONTEND_PATH` maršrutą su `uid` + `token`.
+7. **Vaizdai** – iš `images` objekto rinkis geriausią variantą (pvz., `<source type="image/avif" srcset=...>`).
 
 ## 10. Ateities darbai / plėtra
 
-- Login / logout endpointai (vietoje admino).
 - Vieši receptų siuntimo formos endpointai.
 - Paieškos / rekomendacijų servisai su dedikuotu indeksu.
-- Rate limiting ir API key palaikymas partneriams.
+- Rate limiting ir API key palaikymas partneriams arba mobiliosioms aplikacijoms.
 
 ## 11. Greta esantys moduliai
 

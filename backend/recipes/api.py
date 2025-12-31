@@ -10,6 +10,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import Avg, Count, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
+from django.views.decorators.csrf import csrf_protect
 from ninja import Query, Router
 from ninja.errors import HttpError
 
@@ -361,6 +362,7 @@ def get_recipe_detail(request, slug: str):
 
 
 @router.post("/{recipe_id}/bookmark", response=BookmarkToggleSchema)
+@csrf_protect
 def toggle_bookmark(request, recipe_id: int):
     if not request.user.is_authenticated:
         raise HttpError(401, "Reikia prisijungti, kad išsaugotumėte receptus")
@@ -376,6 +378,7 @@ def toggle_bookmark(request, recipe_id: int):
 
 
 @router.post("/{recipe_id}/comments", response=CommentSchema)
+@csrf_protect
 def create_comment(request, recipe_id: int, payload: CommentCreateSchema):
     if not request.user.is_authenticated:
         raise HttpError(401, "Reikia prisijungti, kad komentuotumėte")
@@ -391,6 +394,7 @@ def create_comment(request, recipe_id: int, payload: CommentCreateSchema):
 
 
 @router.post("/{recipe_id}/rating", response=RatingSchema)
+@csrf_protect
 def upsert_rating(request, recipe_id: int, payload: RatingCreateSchema):
     if not request.user.is_authenticated:
         raise HttpError(401, "Reikia prisijungti, kad vertintumėte receptą")
