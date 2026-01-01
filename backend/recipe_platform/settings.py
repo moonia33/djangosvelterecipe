@@ -11,6 +11,9 @@ env_file = BASE_DIR / ".env"
 if env_file.exists():
     env.read_env(env_file)
 
+UPSTASH_SEARCH_ENABLED = env.bool("UPSTASH_SEARCH_ENABLED", default=True)
+UPSTASH_SEARCH_INDEX = env("UPSTASH_SEARCH_INDEX", default="recipes")
+
 PRIMARY_DOMAIN = env("PRIMARY_DOMAIN", default="apetitas.lt")
 API_HOST = env("API_HOST", default=f"api.{PRIMARY_DOMAIN}")
 
@@ -44,9 +47,9 @@ THIRD_PARTY_APPS = [
 ]
 
 LOCAL_APPS = [
-    "recipes",
-    "notifications",
-    "sitecontent",
+    "recipes.apps.RecipesConfig",
+    "notifications.apps.NotificationsConfig",
+    "sitecontent.apps.SitecontentConfig",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS

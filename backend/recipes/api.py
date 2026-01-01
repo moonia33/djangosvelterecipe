@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 from typing import Iterable
+from typing import Optional
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db.models import Avg, Count, Prefetch, Q
+from django.db.models import Avg, Case, Count, IntegerField, Prefetch, Q, When
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.views.decorators.csrf import csrf_protect
@@ -17,6 +18,8 @@ from ninja.errors import HttpError
 from notifications.services import EmailTemplateNotFound, send_templated_email
 
 from .models import Bookmark, Comment, Rating, Recipe, RecipeIngredient, RecipeStep
+from .upstash_search import is_enabled as upstash_is_enabled
+from .upstash_search import search_recipe_ids
 from .schemas import (
     BookmarkToggleSchema,
     CommentCreateSchema,
@@ -254,12 +257,27 @@ def _annotate_with_ratings(qs):
 def list_recipes(request, filters: RecipeFilters = Query(...)):
     qs = Recipe.objects.all()
 
+    ranked_ids: list[int] | None = None
+    used_upstash = False
+
     if filters.search:
-        qs = qs.filter(
-            Q(title__icontains=filters.search)
-            | Q(description__icontains=filters.search)
-            | Q(description_html__icontains=filters.search)
-        )
+        if upstash_is_enabled() and filters.offset < 1000:
+            # Upstash Search API neturi offset, todėl puslapiuojame lokaliai.
+            # Kad neužsikrautume per daug, apsiribojame 1000 dokumentų.
+            ranked_ids = search_recipe_ids(filters.search, limit=1000)
+
+            # None reiškia: išjungta arba klaida -> darysim DB fallback.
+            if ranked_ids is not None:
+                used_upstash = True
+                qs = qs.filter(id__in=ranked_ids) if ranked_ids else qs.none()
+
+        if not used_upstash:
+            # Fallback (arba Upstash klaida / išjungtas): DB per icontains.
+            qs = qs.filter(
+                Q(title__icontains=filters.search)
+                | Q(description__icontains=filters.search)
+                | Q(description_html__icontains=filters.search)
+            )
     if filters.tag:
         qs = qs.filter(tags__slug=filters.tag)
     if filters.category:
@@ -272,13 +290,51 @@ def list_recipes(request, filters: RecipeFilters = Query(...)):
         qs = qs.filter(difficulty=filters.difficulty)
 
     qs = _annotate_with_ratings(qs)
-    qs = qs.order_by("-published_at", "-updated_at", "-id").distinct()
+    qs = qs.distinct()
 
     total = qs.count()
-    qs = _prefetch_for_list(qs)
-    start = filters.offset
-    end = start + filters.limit
-    recipes_batch = list(qs[start:end])
+
+    if used_upstash:
+        page_ids = (ranked_ids or [])[
+            filters.offset: filters.offset + filters.limit]
+        if not page_ids:
+            recipes_batch = []
+        else:
+            order = Case(
+                *[When(id=rid, then=pos) for pos, rid in enumerate(page_ids)],
+                output_field=IntegerField(),
+            )
+
+            page_qs = Recipe.objects.filter(id__in=page_ids)
+            if filters.tag:
+                page_qs = page_qs.filter(tags__slug=filters.tag)
+            if filters.category:
+                page_qs = page_qs.filter(categories__slug=filters.category)
+            if filters.cuisine:
+                page_qs = page_qs.filter(cuisines__slug=filters.cuisine)
+            if filters.meal_type:
+                page_qs = page_qs.filter(meal_types__slug=filters.meal_type)
+            if filters.difficulty:
+                page_qs = page_qs.filter(difficulty=filters.difficulty)
+
+            page_qs = _annotate_with_ratings(page_qs)
+            page_qs = _prefetch_for_list(page_qs)
+            page_qs = page_qs.order_by(order)
+
+            # Jei filtrai per M2M sukeltų duplikatus, dedupuojam Python'e pagal ID.
+            seen: set[int] = set()
+            recipes_batch = []
+            for recipe in page_qs:
+                if recipe.id in seen:
+                    continue
+                seen.add(recipe.id)
+                recipes_batch.append(recipe)
+    else:
+        qs = qs.order_by("-published_at", "-updated_at", "-id")
+        qs = _prefetch_for_list(qs)
+        start = filters.offset
+        end = start + filters.limit
+        recipes_batch = list(qs[start:end])
 
     bookmarked_ids: set[int] = set()
     if request.user.is_authenticated and recipes_batch:
@@ -374,6 +430,7 @@ def toggle_bookmark(request, recipe_id: int):
     if not created:
         bookmark.delete()
         return BookmarkToggleSchema(is_bookmarked=False)
+
     return BookmarkToggleSchema(is_bookmarked=True)
 
 
